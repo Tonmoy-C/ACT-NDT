@@ -1,0 +1,194 @@
+# config.yaml  —  Single source of truth for all framework parameters
+# Fixes #11: replaces all hardcoded literals scattered across scenario scripts
+#
+# Load with:
+#   from config_loader import CFG
+#   episodes = CFG["training"]["episodes"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Global / shared
+# ─────────────────────────────────────────────────────────────────────────────
+global:
+  seed: 42
+  log_dir: "logs/"
+  results_dir: "results/"
+  sionna_rest_url: "http://localhost:8080"   # twin REST endpoint (S1 design)
+  use_sionna_twin: false                      # flip to true when twin is live
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHY / channel
+# ─────────────────────────────────────────────────────────────────────────────
+phy:
+  mcs_min: 0
+  mcs_max: 28
+  pmi_min: 0
+  pmi_max: 15
+  power_db_min: 10.0
+  power_db_max: 30.0
+  bler_target: 0.10
+  bler_profile_default: "default"    # key into phy_models.BLER_PROFILES
+  base_snr_db: 18.0   # matches original TelcoTwinEnv (was 15.0 in the earlier fix bundle - unexplained drift, see README)
+  power_sensitivity: 0.15
+  pmi_penalty_db: 0.25
+
+channel:
+  default_model: "llama3.2"
+  shift_model: "llama3.2"              # model used during distribution shift
+  mobility_kmh: 0.0
+  blockage_prob: 0.0
+  blockage_loss_db: 20.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM / agent
+# ─────────────────────────────────────────────────────────────────────────────
+llm:
+  provider: "ollama"                 # "ollama" | "openai" | "anthropic"
+  model: "llama3.2"                  # fast small model - this framework fires MANY small
+                                      # calls (thousands per full scenario run), so call
+                                      # LATENCY matters more than raw model size here, even
+                                      # on generous hardware. For a smaller, quality-focused
+                                      # comparison run, try a bigger model (e.g. qwen3:30b-class
+                                      # if your machine has 64GB+) - check current tags at
+                                      # https://ollama.com/library, naming shifts over time.
+  base_url: "http://localhost:11434"
+  timeout_s: 30
+  max_tokens: 512
+  temperature: 0.2
+  action_schema:                     # structured output expected from LLM
+    mcs:      {type: int,   min: 0,  max: 28}
+    pmi:      {type: int,   min: 0,  max: 15}
+    power_db: {type: float, min: 10, max: 30}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Training
+# ─────────────────────────────────────────────────────────────────────────────
+training:
+  episodes: 50
+  steps_per_episode: 100
+  shift_episode: 25                  # episode at which channel model shifts
+  eval_interval: 5                   # evaluate every N episodes
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scenario 1  —  PHY baseline
+# ─────────────────────────────────────────────────────────────────────────────
+scenario1:
+  description: "PHY baseline — Sionna twin validation"
+  bler_profile: "default"
+  episodes: 30
+  steps_per_episode: 100
+  reward_weights:
+    w_tp: 1.0
+    w_bler: 20.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scenario 2  —  ReAct agent
+# ─────────────────────────────────────────────────────────────────────────────
+scenario2:
+  description: "ReAct LLM agent — single-link link adaptation"
+  bler_profile: "default"
+  memory_window: 5                   # how many past steps to include in prompt
+  shift_episode: 25
+  reward_weights:
+    w_tp: 1.0
+    w_bler: 20.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scenario 3  —  ReAct + Memory  (multi-cell)
+# ─────────────────────────────────────────────────────────────────────────────
+scenario3:
+  description: "ReAct + Memory — multi-cell HO & interference"
+  num_cells: 3
+  memory_window: 5
+  shift_episode: 25
+  reward_weights:
+    w_tp: 0.45
+    w_fair: 12.0
+    w_p5: 0.35
+    w_ho: 8.0
+    w_pp: 6.0
+    w_int: 0.15
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scenario 4  —  Reflexion + DQN baseline
+# ─────────────────────────────────────────────────────────────────────────────
+scenario4:
+  description: "Reflexion agent vs real DQN baseline"
+  bler_profile: "mobility"
+  mobility_kmh: 60.0
+  memory_window: 5
+  shift_episode: 25
+  dqn:
+    learning_rate: 0.001
+    gamma: 0.99
+    epsilon_start: 1.0
+    epsilon_end: 0.05
+    epsilon_decay: 500
+    buffer_size: 10000
+    batch_size: 64
+    target_update_freq: 10
+    pretrain_episodes: 200           # bumped from 20 after a real run showed DQN-Replay
+                                     # losing to even the Static policy - 2000 steps was not
+                                     # enough training signal. Still worth checking the
+                                     # printed training-progress line before trusting this
+                                     # as a fair baseline (see scenario4_mobility_blockage.py).
+  reward_weights:
+    w_tp: 1.0
+    w_bler: 20.0
+    blockage_penalty: 0.8
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scenario 5  —  Evolutionary optimiser
+# ─────────────────────────────────────────────────────────────────────────────
+scenario5:
+  description: "Evolutionary policy optimisation"
+  bler_profile: "evolution"
+  mobility_kmh: 30.0               # triggers pedestrian-fast penalty
+  population_size: 20
+  generations: 10
+  runs_per_candidate: 9
+  steps_per_run: 100
+  mutation_rate: 0.15
+  crossover_rate: 0.7
+  elite_count: 2
+  fitness:                          # Eq.5 weights (all terms now included)
+    lam_tp: 0.55
+    lam_bler: 8.0
+    lam_reward: 0.45
+    lam_fair: 0.0
+    lam_int: 0.0
+    lam_cost: 0.0
+    bler_target: 0.10
+  parallel_workers: 4               # ProcessPoolExecutor workers (fix #15)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scenario 6  —  Neural receiver hyperparameter search
+# ─────────────────────────────────────────────────────────────────────────────
+scenario6:
+  description: "Neural receiver architecture search"
+  bler_profile: "neural_rx"
+  # Real data path — place Sionna-generated dataset here (fix #2)
+  real_data_path: "data/s6_neural_rx_dataset.npz"
+  use_synthetic_fallback: false     # set true only for CI smoke tests
+  synthetic_samples: 500
+  hyperparameter_grid:             # exhaustive (fix #5 — no more subsampling)
+    hidden_layers: [1, 2, 3, 4, 5]
+    hidden_dim:    [32, 64, 128, 256]
+    activation:    ["relu", "tanh", "logistic", "identity"]   # sklearn MLPClassifier's actual supported set - "gelu"/"selu" (Keras-style names) crash it
+    learning_rate: [0.01, 0.001, 0.0001, 0.00001]
+  search_strategy: "exhaustive"    # "exhaustive" | "random" | "bayesian"
+  random_budget: 100               # only used when strategy == "random"
+  eval_epochs: 15    # bumped from 5 after a real run showed most of the 320 configs
+                     # hitting sklearn's ConvergenceWarning cap (max_iter=eval_epochs*10);
+                     # search still finishes in a few minutes at this setting
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scenario 7  —  Cost meta-analysis
+# ─────────────────────────────────────────────────────────────────────────────
+scenario7:
+  description: "Cost and efficiency meta-analysis across S1–S6"
+  cost_log_glob: "logs/exp*_cost_log.csv"
+  token_cost_per_1k:               # USD per 1 000 tokens (update as needed)
+    ollama: 0.0                    # free / local
+    openai_gpt4o: 0.005
+    anthropic_claude_sonnet: 0.003
+  wall_time_budget_s: 3600         # target per-scenario wall-time cap

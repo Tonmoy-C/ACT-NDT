@@ -1,0 +1,12 @@
+# Pinned to the exact versions this bundle was built and tested against.
+# For day-to-day work, pyproject.toml's looser ranges are usually fine -
+# use this file specifically when you need to reproduce a result exactly.
+pyyaml==6.0.3
+numpy==2.4.4
+pandas==3.0.2
+scikit-learn==1.8.0
+tqdm==4.69.0
+matplotlib==3.10.8
+requests==2.33.1
+torch==2.13.0
+scipy==1.17.1
